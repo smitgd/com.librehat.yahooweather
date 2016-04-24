@@ -44,6 +44,7 @@ Item {
     property string m_conditionDesc
     property int m_conditionTemp
     property alias dataModel: forecastModel
+    property bool yahooApiUnitsBroken: true
     
     // don't use m_response outside this file!
     property string m_response
@@ -168,7 +169,16 @@ Item {
         m_astronomySunset        = fixTime(results.astronomy.sunset, plasmoid.configuration.timeFormat24)
         m_geoLat                 = results.item.lat
         m_geoLong                = results.item.long
-        
+
+        // Assumption: if pressure in less than 40, pressure units from
+        // yahoo are now in the expected in-Hg instead of mBar. Since
+        // this pressure is now in correct units, can assume that visibility
+        // distance and wind speed are now also in the correct units of miles
+        // and miles/hr instead of km and km/hr. I.e., units are now not broken.
+        if (m_atmospherePressure < 40) {
+            yahooApiUnitsBroken = false
+        }
+
         m_conditionIcon = determineIcon(parseInt(results.item.condition.code))
         m_conditionDesc = getDescription(parseInt(results.item.condition.code))
         m_conditionTemp = parseInt(results.item.condition.temp)
@@ -182,33 +192,65 @@ Item {
             m_unitTemperature = "F"
         }
         
-        if (plasmoid.configuration.ms) {
-            m_unitSpeed = "m/s"
-            m_windSpeed = kmhToMs(m_windSpeed)
-        } else if (plasmoid.configuration.mph) {
-            m_unitSpeed = "mph"
-            m_windSpeed = kmToMi(m_windSpeed)
-        } else {
-            m_unitSpeed = "km/h"
-        }
-        
-        if (plasmoid.configuration.mi) {
-            m_atmosphereVisibility = kmToMi(m_atmosphereVisibility)
-            m_unitDistance = "mi"
-        } else {
-            m_unitDistance = "km"
-        }
-        
-        if (plasmoid.configuration.inhg) {
-            m_atmospherePressure = mbarToIn(m_atmospherePressure)
-            m_unitPressure = "inHg"
-        } else if (plasmoid.configuration.atm) {
-            m_atmospherePressure = mbarToAtm(m_atmospherePressure)
-            m_unitPressure = "atm"
-        } else if (plasmoid.configuration.hpa) {
-            m_unitPressure = "hPa"
-        } else {
-            m_unitPressure = "mbar"
+        if (yahooApiUnitsBroken) {
+           if (plasmoid.configuration.ms) {
+               m_unitSpeed = "m/s"
+               m_windSpeed = kmhToMs(m_windSpeed)
+           } else if (plasmoid.configuration.mph) {
+               m_unitSpeed = "mph"
+               m_windSpeed = kmToMi(m_windSpeed)
+           } else {
+               m_unitSpeed = "km/h"
+           }
+
+           if (plasmoid.configuration.mi) {
+               m_atmosphereVisibility = kmToMi(m_atmosphereVisibility)
+               m_unitDistance = "mi"
+           } else {
+               m_unitDistance = "km"
+           }
+
+           if (plasmoid.configuration.inhg) {
+               m_atmospherePressure = mbarToIn(m_atmospherePressure)
+               m_unitPressure = "inHg"
+           } else if (plasmoid.configuration.atm) {
+               m_atmospherePressure = mbarToAtm(m_atmospherePressure)
+               m_unitPressure = "atm"
+           } else if (plasmoid.configuration.hpa) {
+               m_unitPressure = "hPa"
+           } else {
+               m_unitPressure = "mbar"
+           }
+        } else { // units from yahoo now seem consistent
+           if (plasmoid.configuration.ms) {
+               m_unitSpeed = "m/s"
+               m_windSpeed = mphToMs(m_windSpeed)
+           } else if (plasmoid.configuration.mph) {
+               m_unitSpeed = "mph"
+           } else {
+               m_unitSpeed = "km/h"
+               m_windSpeed = miToKm(m_windSpeed)
+           }
+
+           if (plasmoid.configuration.mi) {
+               m_unitDistance = "mi"
+           } else {
+               m_atmosphereVisibility = miToKm(m_atmosphereVisibility)
+               m_unitDistance = "km"
+           }
+
+           if (plasmoid.configuration.inhg) {
+               m_unitPressure = "inHg"
+           } else if (plasmoid.configuration.atm) {
+               m_atmospherePressure = inToAtm(m_atmospherePressure)
+               m_unitPressure = "atm"
+           } else if (plasmoid.configuration.hpa) {
+               m_atmospherePressure = inToMbar(m_atmospherePressure)
+               m_unitPressure = "hPa"
+           } else {
+               m_atmospherePressure = inToMbar(m_atmospherePressure)
+               m_unitPressure = "mbar"
+           }
         }
 
         var forecasts = results.item.forecast
@@ -224,7 +266,7 @@ Item {
             forecastModel.append({
                 "day": parseDay(forecasts[i].day),
                 "temp": high  + "°" + m_unitTemperature + "<br />" +
-                        "<font color=\"blue\" />"+ low + "°" + m_unitTemperature, 
+                        low   + "°" + m_unitTemperature, 
                 "icon": determineIcon(parseInt(forecasts[i].code))
             })
         }
@@ -656,7 +698,54 @@ Item {
             m = parseFloat(m)
         }
         var k = m / 1013.25
-        return k.toFixed(0)
+        return k.toFixed(2)
+    }
+
+    // convert miles/hr to meters/sec
+    function mphToMs(m) {
+        if (!m) {
+            return undefined
+        }
+        if (typeof m !== "number") {
+            m = parseFloat(m)
+        }
+        var k = m * 0.447034
+        return k.toFixed(2)
+    }
+
+    // convert miles to kilometers
+    function miToKm(m) {
+        if (!m) {
+            return undefined
+        }
+        if (typeof m !== "number") {
+            m = parseFloat(m)
+        }
+        var k = m * 1.60934
+        return k.toFixed(2)
+    }
+
+    // convert inch of mercury to atmospheres
+    function inToAtm(m) {
+        if (!m) {
+            return undefined
+        }
+        if (typeof m !== "number") {
+            m = parseFloat(m)
+        }
+        var k = m * 0.0334211
+        return k.toFixed(2)
+    }
+
+    // convert inch of mercury to mbar (or hPa)
+    function inToMbar(m) {
+        if (!m) {
+            return undefined
+        }
+        if (typeof m !== "number") {
+            m = parseFloat(m)
+        }
+        var k = m * 33.8638867
+        return k.toFixed(2)
     }
 }
-
