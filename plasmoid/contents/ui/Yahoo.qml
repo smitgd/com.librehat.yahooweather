@@ -223,7 +223,8 @@ Item {
 
             forecastModel.append({
                 "day": parseDay(forecasts[i].day),
-                "temp": high + "/" + low + "°" + m_unitTemperature,
+                "temp": high  + "°" + m_unitTemperature + "<br />" +
+                        "<font color=\"blue\" />"+ low + "°" + m_unitTemperature, 
                 "icon": determineIcon(parseInt(forecasts[i].code))
             })
         }
