@@ -12,11 +12,13 @@ import QtQuick 2.2
 
 Item {
     id: yahoo
-    
+
     property bool hasdata: false
-    //used to display error on widget
-    property string errstring
+    property string errstring     //used to display error on widget
     property bool m_isbusy: false
+    property int constRetries: 5  // set max number of http query retries here
+    property int retryCount: constRetries
+    property bool yahooApiUnitsBroken: true
 
     property string m_pubDate;
     property string m_link
@@ -44,72 +46,96 @@ Item {
     property string m_conditionDesc
     property int m_conditionTemp
     property alias dataModel: forecastModel
-    property bool yahooApiUnitsBroken: true
-    
+
     // don't use m_response outside this file!
     property string m_response
 
     Forecast {
         id: forecastModel
     }
-    
+
     property string unitsymbol
-    
+
     property int failedAttempts: 0
-    
-    // timer for repeat query from sh033
+
+    // timer for repeat query from sh033 (for retry of failed http request)
     Timer {
         id: repeatquery
         interval: 10000
         running: false
-        repeat: true
+        repeat: false
         onTriggered: {
-            running = false
-            console.debug("Reapeat Query.. ")
+            console.info("Repeat Query.. ")
             query()
+            if (retryCount > 0) {
+                retryCount--
+            }
+            // since repeat false, running set false on trigger
         }
     }
-    
+
     function query(woeid) {
-        console.debug("Querying...")
-        
+        console.info("Querying...")
+
         m_isbusy = true
         woeid = woeid ? woeid : plasmoid.configuration.woeid
         if (!woeid) {
             hasdata = false
             m_isbusy = false
             errstring = i18n("Error 3. WOEID is not specified.")
-            console.debug("WOEID is empty.")
+            console.info("WOEID is empty.")
             return//fail silently
         }
-        
         if (plasmoid.configuration.celsius) {
             unitsymbol = "c"
         } else {
             unitsymbol = "f"
         }
-        
+
         var source = "http://query.yahooapis.com/v1/public/yql?q=select * from weather.forecast where woeid='" + woeid + "' and u='f'&format=json"
-        console.debug("Source changed to", source)
+        console.info("Source changed to", source)
         var doc = new XMLHttpRequest()
         doc.onreadystatechange = function() {
+            console.info("doc.readyState is", doc.readyState)
             if (doc.readyState === XMLHttpRequest.DONE) {
+                repeatquery.stop()
+                console.info("doc.status is", doc.status)
                 if (doc.status === 200) {
                     getweatherinfo(doc.responseText)
+                    retryCount = constRetries
                 } else {
-                    errstring = i18n("Error 1. Please check your network.")
-                    console.debug("HTTP request failed, try again.")
-                    repeatquery.running = true
+                    if (retryCount > 0) {
+                        console.info("HTTP request failed, try again.")
+                        repeatquery.start()
+                    } else {
+                        errstring = i18n("Error 1. Please check your network.")
+                                  + "<br/>"
+                                  + i18n("No weather data received.")
+                                  + "<br/>"
+                                  + i18n("When problem corrected please click refresh button.")
+                        console.info(i18n("Error 1. Please check your network."))
+                        hasdata = false;
+                        m_isbusy = false;
+                        retryCount = constRetries
+                    }
                 }
+            } else {
+                // start query retry timer when state is not DONE. If hangs in
+                // state 1 (only when network down) another query
+                // when timer triggers fixes it so state goes to 4 (DONE).
+                // This prevents getting stuck in any state other
+                // than DONE. (But, have only seen stuck in state 1.)
+                repeatquery.start()
             }
         }
         doc.open("GET", source, true)
         doc.send()
     }
-    
+
     function getweatherinfo(response) {
-        console.debug("getweatherinfo() is called. Getting Weather Information...")
+        console.info("getweatherinfo() is called. Getting Weather Information...")
         if (!response) {
+            console.info("Unexpected: response is empty.")
             console.error("Unexpected: response is empty.")
             return
         }
@@ -119,35 +145,44 @@ Item {
 
         if (!resObj) {
             hasdata = false
+            console.info("Cannot parse response")
             console.error("Cannot parse response")
             return
         }
 
         if (resObj.error) {
             hasdata = false
-            errstring = resOjb.error.description
+            errstring = resObj.error.description
+            console.info("Error message from API:")
             console.error("Error message from API:", errstring)
             return
         }
 
-        if (resObj.query.count !== 1) {
-            console.debug("Query count:", resObj.query.count)
-            if (resObj.query.count === 0) {
-                if (failedAttempts >= 30) {
-                    hasdata = false
-                    errstring = i18n("Error 2. WOEID may be invalid.")
-                } else {
-                    console.debug("Could be an API issue, try again. Attempts:", failedAttempts)
-                    failedAttempts += 1
-                    query()
-                }
-            } else {
+        if ((resObj.query.count === 0) || ((resObj.query.count === 1) &&
+            (resObj.query.results.channel.description === undefined))) {
+            // query.count is zero OR it is 1 but the result not parsable.
+            // This usually indicates a bad WOEID was entered. But retry
+            // the query up to 30 times in case this is possibly an incomplete
+            // or corrupted response.
+            if (failedAttempts >= 30) {
+                console.info("query.count =", resObj.query.count)
                 hasdata = false
                 errstring = i18n("Error 2. WOEID may be invalid.")
+                failedAttempts = 0
+            } else {
+                console.info("Could be an API issue, try again. Attempts:", failedAttempts)
+                failedAttempts += 1
+                query()
             }
             return
+        } else if (resObj.query.count !== 1) {
+            // count is neither 0 or 1 which is immediately invalid; no retry
+            console.info("query.count not 0 or 1")
+            hasdata = false
+            errstring = i18n("Error 2. WOEID may be invalid.")
+            return
         }
-        
+
         // store successful response in case user needs to change units
         // then we can parse the response text without querying again
         m_response = response
@@ -182,7 +217,7 @@ Item {
         m_conditionIcon = determineIcon(parseInt(results.item.condition.code))
         m_conditionDesc = getDescription(parseInt(results.item.condition.code))
         m_conditionTemp = parseInt(results.item.condition.temp)
-        
+
         // Unit conversions
         if (plasmoid.configuration.celsius) {
             m_unitTemperature = "C"
@@ -191,7 +226,7 @@ Item {
         } else {
             m_unitTemperature = "F"
         }
-        
+
         if (yahooApiUnitsBroken) {
            if (plasmoid.configuration.ms) {
                m_unitSpeed = "m/s"
@@ -266,11 +301,11 @@ Item {
             forecastModel.append({
                 "day": parseDay(forecasts[i].day),
                 "temp": high  + "°" + m_unitTemperature + "<br />" +
-                        low   + "°" + m_unitTemperature, 
+                        low   + "°" + m_unitTemperature,
                 "icon": determineIcon(parseInt(forecasts[i].code))
             })
         }
-        console.debug(forecasts.length, "days forecast")
+        console.info(forecasts.length, "days forecast")
 
         hasdata = true
         failedAttempts = 0
@@ -301,7 +336,7 @@ Item {
                 return i18n("Saturday")
         }
     }
-    
+
     function determineIcon(code) {
         if (code <= 4) {
             return "weather-storm"
@@ -379,7 +414,7 @@ Item {
             return "weather-none-available"
         }
     }
-    
+
     function getDescription(conCode) {
         //according to http://developer.yahoo.com/weather/#codes
         switch (conCode) {
@@ -532,7 +567,7 @@ Item {
             return " "
         }
     }
-    
+
     function parseRising(r) {
         if (r === null || r === undefined) {
             return undefined;
@@ -541,7 +576,7 @@ Item {
         if (typeof r !== "number") {
             r = parseInt(r)
         }
-        
+
         switch (r) {
             case 0:
                 return "→";//steady
@@ -556,7 +591,7 @@ Item {
 
     // Insert missing leading 0 on minutes if necessary.
     // E.g., if s = "8:7 pm" change to "8:07 pm"
-    // In addition, if convert24 is true, change "8:07 pm" 
+    // In addition, if convert24 is true, change "8:07 pm"
     // to "20:07" or 3:07 am to "03:07", etc.
     function fixTime(s, convert24) {
         if (typeof s !== "string")
@@ -676,7 +711,7 @@ Item {
         var k = m / 1.609344
         return k.toFixed(2)
     }
-    
+
     // convert mbar to inch of mercury
     function mbarToIn(m) {
         if (m === null || m === undefined) {
@@ -688,7 +723,7 @@ Item {
         var k = m / 33.8638867
         return k.toFixed(2)
     }
-    
+
     // convert mbar to atmosphere
     function mbarToAtm(m) {
         if (m === null || m === undefined) {
