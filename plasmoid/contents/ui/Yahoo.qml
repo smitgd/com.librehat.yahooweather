@@ -19,6 +19,7 @@ Item {
     property int constRetries: 5  // set max number of http query retries here
     property int retryCount: constRetries
     property bool yahooApiUnitsBroken: true
+    property bool networkError: false
 
     property string m_pubDate;
     property string m_link
@@ -58,25 +59,21 @@ Item {
 
     property int failedAttempts: 0
 
-    // timer for repeat query from sh033 (for retry of failed http request)
+    // timer for repeat query from sh033
     Timer {
         id: repeatquery
         interval: 10000
         running: false
-        repeat: false
+        repeat: true
         onTriggered: {
-            console.info("Repeat Query.. ")
+            running = false
+            console.debug("Reapeat Query.. ")
             query()
-            if (retryCount > 0) {
-                retryCount--
-            }
-            // since repeat false, running set false on trigger
         }
     }
 
     function query(woeid) {
         console.info("Querying...")
-
         m_isbusy = true
         woeid = woeid ? woeid : plasmoid.configuration.woeid
         if (!woeid) {
@@ -96,36 +93,23 @@ Item {
         console.info("Source changed to", source)
         var doc = new XMLHttpRequest()
         doc.onreadystatechange = function() {
-            console.info("doc.readyState is", doc.readyState)
+            console.info("readyState is", doc.readyState)
             if (doc.readyState === XMLHttpRequest.DONE) {
-                repeatquery.stop()
-                console.info("doc.status is", doc.status)
+                repeatquery.running = false
                 if (doc.status === 200) {
                     getweatherinfo(doc.responseText)
-                    retryCount = constRetries
+                    networkError = false;
                 } else {
-                    if (retryCount > 0) {
-                        console.info("HTTP request failed, try again.")
-                        repeatquery.start()
-                    } else {
-                        errstring = i18n("Error 1. Please check your network.")
-                                  + "<br/>"
-                                  + i18n("No weather data received.")
-                                  + "<br/>"
-                                  + i18n("When problem corrected please click refresh button.")
-                        console.info(i18n("Error 1. Please check your network."))
-                        hasdata = false;
-                        m_isbusy = false;
-                        retryCount = constRetries
-                    }
+                    errstring = i18n("Error 1. Please check your network.")
+                    console.info("HTTP request failed, try again.")
+                    repeatquery.running = true
+                    hasdata = false;
+                    networkError = true;
                 }
             } else {
-                // start query retry timer when state is not DONE. If hangs in
-                // state 1 (only when network down) another query
-                // when timer triggers fixes it so state goes to 4 (DONE).
-                // This prevents getting stuck in any state other
-                // than DONE. (But, have only seen stuck in state 1.)
-                repeatquery.start()
+                // Start timer to avoid response stuck at readyState of 1
+                // or any other state before DONE (4)
+                repeatquery.running = true
             }
         }
         doc.open("GET", source, true)
